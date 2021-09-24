@@ -1,0 +1,124 @@
+from astroquery.mast import Observations
+from astroquery.vizier import Vizier
+from astropy.io import fits
+import pandas as pd
+
+import numpy as np
+import matplotlib.pyplot as plt
+from gatspy import datasets, periodic
+%matplotlib inline
+
+from astropy import units as u
+from astropy.timeseries import LombScargle
+from astropy.timeseries import TimeSeries
+from astropy.timeseries import BoxLeastSquares
+from astropy.stats import sigma_clipped_stats
+from astropy.timeseries import aggregate_downsample
+
+misiones = Observations.list_missions() #Misiones disponibles. print(misiones)
+
+OBTENCIÓN DE LOS DATOS
+obs_data = Observations.query_criteria(obs_collection = ’TESS’,
+                                       dataproduct_type = [’timeseries’],
+sequence_number = 1) data_products = Observations.get_product_list(obs_data[0:5]) #Cantidad
+de datos a descargar (5 en este caso).
+#Para descargar las curvas de luz.
+lc_data = data_products[’description’] == ’Light curves’ print(data_products[lc_data]
+lc_data_descarga = Observations.download_products(data_products[lc_data]) print(lc_data_descarga)
+
+EXTRACCIÓN DE LA INFORMACIÓN DEL FICHERO FITS
+data = lc_data_descarga[’Local Path’][0] #Abrir los archivos descar- gados, el primero en este caso.
+hd_list = fits.open(data)
+tb_data = hd_list[1].data
+cols = hd_list[1].columns
+ar_size = int(
+    len(tb_data.field(’TIME’)))
+for i in range(0, ar_size):
+     print(str(tb_data.field(’TIME’)[i])+’ ’
+        + str(tb_data.field(’PDCSAP_FLUX’)[i])+’ ’
+        + str(tb_data.field(’PDCSAP_FLUX_ERR’)[i])+’ ’)
+objeto = hd_list[1].header[’OBJECT’]
+print(objeto)
+
+ELIMINACIÓN DE LOS DATOS FALTANTES - NaN
+#Abrir el archivo con la informarción extraída del header. datos = pd.read_csv(’datos_matriz.txt’,
+header = None, delim_whitespace = True)
+remove_nan = datos.dropna(how = ’any’)
+print(remove_nan)
+ruta = ” #Especificar el lugar de guardado. #Gardar el archivo sin valores faltantes. remove_nan.to_csv(ruta,
+                  index = False,
+                  header = False,
+                  sep =’ ’)
+
+GRAFICACIÓN DE LOS DATOS PARA VERIFICAR POSIBLES TRÁNSITOS
+df = pd.read_csv(’datos_matriz_no_nan.txt”,
+                  delim_whitespace = True,
+header = None) headers = [’TJD’, ’FLUX’, ’FLUX_ERROR’] df.columns = headers
+plt.figure(figsize = (14, 6))
+plt.errorbar(df.TJD, df.FLUX, df.FLUX_ERROR,
+             fmt = ’kh’,
+             capsize = 3,
+             elinewidth = 0.5)
+plt.xlabel(’Time (TJD-2457000)’)
+plt.ylabel(’Flux (e-/s)’)
+plt.title(objeto, size = 15)
+plt.grid()
+plt.show()
+
+INGRESO AL CATÁLOGO DE VIZIER PARA CONSEGUIR LOS DATOS ESTELARES DEL OBJETO
+catalogo = Vizier(columns = [’TIC’,
+                             ’Rad’,
+’Mass’])
+resultado = catalogo.query_object(objeto,
+                                  catalog = [’TIC’])
+print(resultado)
+print(resultado[1]) #Elijo este catálogo ya que tiene las 3 columnas que estoy buscando.
+TIC, rad, mass = (resultado[1][14][’TIC’],
+                  resultado[1][14][’Rad’],
+                  resultado[1][14][’Mass’])
+print(TIC, rad, mass)
+
+DETERMINACIÓN DEL PERIODO Y SEMIEJE MAYOR DE LA ÓRBITA
+time, flux = LombScargle(df.TJD, df.FLUX).autopower()
+plt.plot(time, flux)
+plt.show()
+modelo = periodic.LombScargle(fit_period = True)
+modelo.optimizer.period_range = (1,20)
+modelo.fit(df.TJD, df.FLUX,)
+#Obtención del periodo.
+P = modelo.best_period
+print(’El periodo orbital para’, objeto, ’es’, P, ’días’)
+M = mass
+P1 = P/365.25 #Periodo en años.
+a = ((P1**2)*(M))**(1/3) #Semieje mayor en unidades astronómicas. print (’El semieje mayor es de’, a, ’UA’)
+
+
+GRAFICACIÓN DE LOS DATOS EN FASE
+serie_temporal = TimeSeries.read(data, format = ’tess.fits’)
+periodograma = BoxLeastSquares.from_timeseries(serie_temporal, ’pdcsap_flux’)
+rts = periodograma.autopower(0.2 * u.day)
+mejor_rts = np.argmax(rts.power)
+tiempo_transito = rts.transit_time[mejor_rts]
+serie_temporal_ajustada = serie_temporal.fold(period = P *u.day, epoch_time = tiempo_transito)
+mean, median, stddev = sigma_clipped_stats(serie_temporal_ajustada[’pdcsap_flux’])
+serie_temporal_ajustada[’pdcsap_flux_norm’] = serie_temporal_ajustada[’pdcsap_flux’]
+/ median
+serie_temporal_add = aggregate_downsample(serie_temporal_ajustada,
+time_bin_size=0.03 * u.day)
+print(serie_temporal_add)
+ajuste1= serie_temporal_add.time_bin_start.jd
+ajuste2 = serie_temporal_add[’pdcsap_flux_norm’]
+ajuste1,ajuste2.min() #Para calcular el valor mínimo del ajuste. plt.plot(serie_temporal_ajustada.time.jd, serie_temporal_ajustada[’pdcsap_flux_norm’],
+’kh’, markersize = 0.6)
+plt.plot(ajuste1, ajuste2,’r’, drawstyle=’default’) #Función ajus- tada.
+plt.xlabel(’Tiempo (days)’)
+plt.xlim(-1,1)
+plt.ylabel(’Flujo normalizado’)
+plt.legend((’Datos’, ’Ajuste’))
+plt.show()
+
+DETERMINACIÓN DEL TAMAÑO DEL PLANETA
+R_s = rad #Radio de la estrella en radios solares.
+pf = 1 - Quantity #Profundidad del tránsito.
+R_j = 9.960378195133814 #Radios solares.
+R_p = R_s * (pf)**(1/2) * R_j #Radio del planeta en radios de júpiter. print(’El el radio del planeta es de’, R_p, ’Rj’)
